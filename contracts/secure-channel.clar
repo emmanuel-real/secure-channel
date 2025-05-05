@@ -78,3 +78,96 @@
     nonce: uint                ;; Prevents replay attacks
   }
 )
+
+;; Helper function to convert uint to buffer
+(define-private (uint-to-buff (n uint))
+  (unwrap-panic (to-consensus-buff? n))
+)
+
+;; Create a new payment channel
+(define-public (create-channel
+  (channel-id (buff 32))
+  (participant-b principal)
+  (initial-deposit uint)
+)
+  (begin
+    ;; Validate inputs
+    (asserts! (is-valid-channel-id channel-id) ERR-INVALID-INPUT)
+    (asserts! (is-valid-deposit initial-deposit) ERR-INVALID-INPUT)
+    (asserts! (not (is-eq tx-sender participant-b)) ERR-INVALID-INPUT)
+
+    ;; Ensure channel doesn't already exist
+    (asserts! (is-none (map-get? payment-channels {
+      channel-id: channel-id, 
+      participant-a: tx-sender, 
+      participant-b: participant-b
+    })) ERR-CHANNEL-EXISTS)
+
+    ;; Transfer initial deposit from creator
+    (try! (stx-transfer? initial-deposit tx-sender (as-contract tx-sender)))
+
+    ;; Create channel entry
+    (map-set payment-channels 
+      {
+        channel-id: channel-id, 
+        participant-a: tx-sender, 
+        participant-b: participant-b
+      }
+      {
+        total-deposited: initial-deposit,
+        balance-a: initial-deposit,
+        balance-b: u0,
+        is-open: true,
+        dispute-deadline: u0,
+        nonce: u0
+      }
+    )
+
+    (ok true)
+  )
+)
+
+;; Fund an existing payment channel
+(define-public (fund-channel
+  (channel-id (buff 32))
+  (participant-b principal)
+  (additional-funds uint)
+)
+  (let
+    (
+      (channel (unwrap!
+        (map-get? payment-channels {
+          channel-id: channel-id,
+          participant-a: tx-sender,
+          participant-b: participant-b
+        })
+        ERR-CHANNEL-NOT-FOUND
+      ))
+    )
+    ;; Validate inputs
+    (asserts! (is-valid-channel-id channel-id) ERR-INVALID-INPUT)
+    (asserts! (is-valid-deposit additional-funds) ERR-INVALID-INPUT)
+    (asserts! (not (is-eq tx-sender participant-b)) ERR-INVALID-INPUT)
+
+    ;; Validate channel is open
+    (asserts! (get is-open channel) ERR-CHANNEL-CLOSED)
+
+    ;; Transfer additional funds
+    (try! (stx-transfer? additional-funds tx-sender (as-contract tx-sender)))
+
+    ;; Update channel state
+    (map-set payment-channels 
+      {
+        channel-id: channel-id, 
+        participant-a: tx-sender, 
+        participant-b: participant-b
+      }
+      (merge channel {
+        total-deposited: (+ (get total-deposited channel) additional-funds),
+        balance-a: (+ (get balance-a channel) additional-funds)
+      })
+    )
+
+    (ok true)
+  )
+)
